@@ -5,9 +5,9 @@ import akka.actor.typed.scaladsl.Behaviors._
 import akka.actor.typed.{ActorSystem, Behavior, ChildFailed, DispatcherSelector}
 import akka.stream.IOResult
 import akka.stream.alpakka.file.scaladsl.DirectoryChangesSource
-import akka.stream.alpakka.s3.{MetaHeaders, S3Attributes, S3Headers, S3Settings}
+import akka.stream.alpakka.s3.{AccessStyle, MetaHeaders, MultipartUploadResult, S3Attributes, S3Headers, S3Settings}
 import akka.stream.alpakka.s3.scaladsl.S3
-import akka.stream.scaladsl.FileIO
+import akka.stream.scaladsl.{FileIO, Keep}
 
 import java.nio.file.{Files, Path, Paths, StandardCopyOption}
 import scala.concurrent.duration._
@@ -93,7 +93,7 @@ object Streamer {
       blocking: ExecutionContext)(
       implicit exec: ExecutionContext,
       system: ActorSystem[_]
-  ): Future[IOResult] = {
+  ): Future[MultipartUploadResult] = {
     val uploadOperation =
       UploaderFlows.combinedMd5Gzip(
         byteInputDef = FileIO.fromPath(tmpPath),
@@ -110,14 +110,21 @@ object Streamer {
           ).withAttributes(
             S3Attributes.settings(
               S3Settings.apply()
+                .withAccessStyle(AccessStyle.PathAccessStyle)
                 .withEndpointUrl("http://localhost:9000")
             ))
 
-        FileIO.fromPath(gzPath).to(s3Upload).run()
+        FileIO
+          .fromPath(gzPath)
+          .toMat(s3Upload)(Keep.right)
+          .run()
+          .map { result =>
+            println(s"File uploaded to ${result.bucket}/${result.key} v: ${result.versionId}")
+            result
+          }
       }
 
     uploadOperation.onComplete { fin =>
-      println(fin)
       Files.deleteIfExists(tmpPath)
       Files.deleteIfExists(gzPath)
     }(blocking)
